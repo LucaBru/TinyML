@@ -7,6 +7,8 @@ Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "src", "src", "{0A0B524C-A1F
 EndProject
 Project("{F2A71F9B-5D33-465A-A702-920D77279786}") = "TinyML", "src\App\TinyML.fsproj", "{D82124A8-CA56-46B0-87F0-F01B44223CE2}"
 EndProject
+Project("{F2A71F9B-5D33-465A-A702-920D77279786}") = "App.Test", "src\App.Test\App.Test.fsproj", "{5BB7CB75-3BCA-42DC-9614-DE9342B42599}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -20,8 +22,13 @@ Global
 		{D82124A8-CA56-46B0-87F0-F01B44223CE2}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{D82124A8-CA56-46B0-87F0-F01B44223CE2}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{D82124A8-CA56-46B0-87F0-F01B44223CE2}.Release|Any CPU.Build.0 = Release|Any CPU
+		{5BB7CB75-3BCA-42DC-9614-DE9342B42599}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{5BB7CB75-3BCA-42DC-9614-DE9342B42599}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{5BB7CB75-3BCA-42DC-9614-DE9342B42599}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{5BB7CB75-3BCA-42DC-9614-DE9342B42599}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(NestedProjects) = preSolution
 		{D82124A8-CA56-46B0-87F0-F01B44223CE2} = {0A0B524C-A1F5-4FDD-9588-A6E8F3F2F702}
+		{5BB7CB75-3BCA-42DC-9614-DE9342B42599} = {0A0B524C-A1F5-4FDD-9588-A6E8F3F2F702}
 	EndGlobalSection
 EndGlobal
