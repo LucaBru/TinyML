@@ -183,8 +183,6 @@ let rec typeinfer_expr (env: scheme env) (e: expr) : ty * subst =
         let t = apply_subst var subst3
         (t, subst3 $ subst2)
 
-    | BinOp(e1, op, e2) -> typeinfer_expr env (App(App(Var op, e1), e2))
-
     | IfThenElse(e1, e2, Some e3) ->
         let t1, s1 = typeinfer_expr env e1
         let s2 = unify t1 TyBool
@@ -194,6 +192,18 @@ let rec typeinfer_expr (env: scheme env) (e: expr) : ty * subst =
         let s = s5 $ s4 $ s3 $ s2 $ s1
         apply_subst t2 s, s
 
+    | Tuple l ->
+        let mutable previous_subst = []
+
+        let types =
+            l
+            |> List.mapi (fun index e ->
+                let t, previous_subst = typeinfer_expr (apply_subst_env env previous_subst) e
+                t)
+
+        (TyTuple types, previous_subst)
+
+    | BinOp(e1, op, e2) -> typeinfer_expr env (App(App(Var op, e1), e2))
 
 
 
