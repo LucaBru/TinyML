@@ -187,16 +187,16 @@ let rec typeinfer_expr (env: scheme env) (e: expr) : ty * subst =
         let s = s5 $ s4 $ s3 $ s2 $ s1
         apply_subst t2 s, s //! note, apply substitution before return the value since it simplify the rule
 
-    | Tuple l ->
+    | Tuple expressions ->
         let mutable previous_subst = []
 
-        let types =
-            l
-            |> List.mapi (fun index e ->
-                let t, previous_subst = typeinfer_expr (apply_subst_env env previous_subst) e
-                t)
+        let tuple_types =
+            expressions
+            |> List.map (fun expr ->
+                let inferred_type, previous_subst = typeinfer_expr (apply_subst_env env previous_subst) expr
+                inferred_type)
 
-        (TyTuple types, previous_subst)
+        (TyTuple tuple_types, previous_subst)
 
     | BinOp(e1, op, e2) -> typeinfer_expr env (App(App(Var op, e1), e2))
 
