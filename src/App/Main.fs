@@ -17,16 +17,17 @@ let interpret_expr tenv venv e =
     #if DEBUG
     printfn "AST:\t%A\npretty:\t%s" e (pretty_expr e)
     #endif
-    // TODO you can invoke the typeinfer_expr here
-    let t = Typing.typecheck_expr tenv e
+    let inference_type, substitution = Typing.typeinfer_expr [] e
+    pretty_ty inference_type |> ignore
+    //let t = Typing.typecheck_expr tenv e
     #if DEBUG
-    printfn "type:\t%s" (pretty_ty t)
+    printfn "type:\t%s" (pretty_ty inference_type)
     #endif
-    let v = Eval.eval_expr venv e
+    //let v = Eval.eval_expr venv e
     #if DEBUG
-    printfn "value:\t%s\n" (pretty_value v)
+    //printfn "value:\t%s\n" (pretty_value v)
     #endif
-    t, v
+    Typing.apply_subst inference_type substitution, VLit (LInt 0)
 
 let trap f =
     try f ()

@@ -9,22 +9,18 @@ open Ast
 
 let type_error fmt = throw_formatted TypeError fmt
 
-exception CompositionError of string
-
-exception UnificationError of string
-
-exception EnvironmentError of string
-
 type subst = (tyvar * ty) list
 
 let mutable c = 0
 
-let fresh_typevar =
+let fresh_typevar () =
     let id = c
     c <- c + 1
     id
 
-let reset_typevar_counter = c <- 0
+let reset_typevar_counter () = c <- 0
+
+let set_typevar_count value = c <- value
 
 let rec is_typevar_into_type type_var t =
     let rec is_inner = is_typevar_into_type type_var
@@ -32,106 +28,95 @@ let rec is_typevar_into_type type_var t =
     match t with
     | TyVar name when type_var = name -> true
     | TyArrow(t1, t2) -> is_inner t1 || is_inner t2
-    | TyTuple(head :: tail) -> is_inner head || is_inner (TyTuple tail)
+    | TyTuple types_list -> List.exists (fun tuple_t -> is_inner tuple_t) types_list
     | _ -> false
 
-// TODO implement this
-let compose_subst (s1: subst) (s2: subst) : subst =
+let rec apply_subst t subst =
+    match t with
+    | TyName _ -> t
+    | TyVar type_var ->
+        try
+            List.find (fun (in_subst_type_var, _) -> type_var = in_subst_type_var) subst
+            |> snd
+        with :? System.Collections.Generic.KeyNotFoundException ->
+            t
 
-    let exists_conflict_subst =
-        List.allPairs s1 s2
-        |> List.filter (fun (sub1, sub2) -> fst sub1 = fst sub2 && snd sub1 <> snd sub2)
-        |> List.isEmpty
-        |> not
+    | TyArrow(t1, t2) -> TyArrow(apply_subst t1 subst, apply_subst t2 subst)
+    | TyTuple types -> TyTuple(List.map (fun in_tuple_type -> apply_subst in_tuple_type subst) types)
 
-    if exists_conflict_subst then
-        raise (CompositionError "Error while compose substitutions, domains are not disjoint")
+let apply_subst_scheme (Forall(pol_vars, t)) (subst: subst) =
+    let theta' =
+        List.filter (fun (type_var, t) -> pol_vars |> Set.contains type_var |> not) subst
 
-    let substitutions = List.distinct s1 @ s2
+    Forall(pol_vars, apply_subst t theta')
 
-    let exists_circularity =
-        List.allPairs (List.map fst substitutions) (List.map snd substitutions)
-        |> List.exists (fun (type_var, t) -> is_typevar_into_type type_var t)
+let apply_subst_env env subst =
+    env |> List.map (fun (var, scheme) -> (var, apply_subst_scheme scheme subst))
 
-    if exists_circularity then
-        raise (CompositionError "Error while compose substitutions, found circularity")
+let compose_subst subst1 subst2 =
+    let composed_subst =
+        (List.map (fun (type_var, t) -> (type_var, apply_subst t subst1)) subst2)
+        @ subst1
 
-    substitutions
+    try
+        let ((conflict_type_var, t1), (_, t2)) =
+            List.find
+                (fun ((type_var1, t1), (type_var2, t2)) -> type_var1 = type_var2 && t1 <> t2)
+                (List.allPairs composed_subst composed_subst)
+
+        raise ( type_error $"compose substitution error, conflict type variable {conflict_type_var} maps to type {t1} and {t2}")
+
+        let circular_type_var, t =
+            List.find (fun (type_var, t) -> is_typevar_into_type type_var t) composed_subst
+
+        raise (type_error $"compose substitution error, circular type variable {circular_type_var} maps to type {t}") //circular_type_var, t
+
+    with :? System.Collections.Generic.KeyNotFoundException ->
+
+        composed_subst
 
 let ($) = compose_subst
 
-// TODO implement this
-let rec unify (t1: ty) (t2: ty) : subst =
+let rec unify t1 t2 =
     match t1, t2 with
     | TyName c1, TyName c2 when c1 = c2 -> []
     | TyVar type_var, t
-    | t, TyVar type_var -> (type_var, t) :: []
+    | t, TyVar type_var -> [ (type_var, t) ]
     | TyArrow(t1, t2), TyArrow(t3, t4) -> (unify t1 t3) $ (unify t2 t4)
-    | TyTuple(t1 :: tail), TyTuple(t1' :: tail') -> (unify t1 t1') $ (unify (TyTuple tail) (TyTuple tail'))
-    | _ -> raise (UnificationError "Error while unify, some types are incoherent each other")
+    | TyTuple tuple1, TyTuple tuple2 when tuple1.Length = tuple2.Length ->
+        List.fold
+            (fun subst_composition (type_in_tuple1, type_in_tuple2) ->
+                subst_composition $ unify type_in_tuple1 type_in_tuple2)
+            []
+            (List.zip tuple1 tuple2)
 
-// TODO implement this
-let rec apply_subst (t: ty) (s: subst) : ty =
-    match t with
-    | TyName constant_type -> TyName constant_type
-    | TyVar type_var ->
-        let t = List.tryFind (fun elm -> fst elm = type_var) s
+    | _ -> raise (type_error $"unification error, on types {t1} and {t2}")
 
-        match t with
-        | Some s -> snd s
-        | None -> TyVar type_var
-    | TyArrow(t1, t2) -> TyArrow(apply_subst t1 s, apply_subst t2 s)
-    | TyTuple l -> TyTuple(l |> List.map (fun elm -> apply_subst elm s))
-
-let apply_subst_scheme (scheme: scheme) (s: subst) =
-    match scheme with
-    | Forall(pol_vars, t) ->
-        let is_typevar_polymorphic type_var =
-            pol_vars |> Set.exists (fun var -> type_var = var)
-
-        let theta' =
-            s |> List.filter (fun (type_var, _) -> is_typevar_polymorphic type_var |> not)
-
-        Forall(pol_vars, apply_subst t theta')
-
-let apply_subst_env (env: scheme env) (s: subst) : scheme env =
-    env |> List.map (fun (var, scheme) -> (var, apply_subst_scheme scheme s))
-
-// TODO implement this
 let rec freevars_ty t =
     match t with
     | TyName _ -> Set.empty
-    | TyVar type_var -> Set.empty.Add(type_var)
-    | TyArrow(t1, t2) -> Set.union (freevars_ty t1) (freevars_ty t2)
-    | TyTuple(head :: tail) -> Set.union (freevars_ty head) (freevars_ty (TyTuple tail))
-    | TyTuple [] -> Set.empty
+    | TyVar type_var -> Set.singleton type_var
+    | TyArrow(t1, t2) -> freevars_ty t1 + freevars_ty t2
+    | TyTuple type_list -> List.fold (fun acc t -> acc + freevars_ty t) Set.empty type_list
 
-// TODO implement this
-let freevars_scheme (Forall(tvs, t)) = Set.difference (freevars_ty t) tvs
+let freevars_scheme (Forall(tvs, t)) = freevars_ty t - tvs
 
-// TODO implement this
-let rec freevars_scheme_env (env: scheme env) =
-    match env with
-    | head_scheme :: tail -> Set.union (freevars_scheme (snd head_scheme)) (freevars_scheme_env tail)
-    | [] -> Set.empty
+let rec freevars_scheme_env env =
+    List.fold (fun acc (_, type_scheme) -> acc + freevars_scheme type_scheme) Set.empty env
 
 let rec re (free_vars: Set<tyvar>) t =
     let rec re_inner = re free_vars
 
     match t with
-    | TyName t -> TyName t
-    | TyVar type_var when free_vars |> Set.exists (fun elm -> type_var = elm) -> TyVar fresh_typevar
-    | TyVar type_var -> TyVar type_var
+    | TyName _ -> t
+    | TyVar type_var when free_vars |> Set.exists (fun elm -> type_var = elm) -> TyVar(fresh_typevar ())
+    | TyVar _ -> t
     | TyArrow(t1, t2) -> TyArrow(re_inner t1, re_inner t2)
-    | TyTuple l -> TyTuple(l |> List.map (fun elm -> re_inner elm))
+    | TyTuple tuple_types -> TyTuple(tuple_types |> List.map (fun t -> re_inner t))
 
-let inst (s: scheme) =
-    match s with
-    | Forall(pol_vars, t) -> re pol_vars t
+let inst (Forall(pol_vars, t)) = re pol_vars t
 
-let gen (env: scheme env) t =
-    let polymorphic_vars = Set.difference (freevars_ty t) (freevars_scheme_env env)
-    Forall(polymorphic_vars, t)
+let gen env t = Forall(freevars_ty t - freevars_scheme_env env, t)
 
 // basic environment: add builtin operators at will
 //
@@ -161,24 +146,23 @@ let rec typeinfer_expr (env: scheme env) (e: expr) : ty * subst =
             let t = inst s
             (t, [])
         with :? System.Collections.Generic.KeyNotFoundException ->
-            raise (EnvironmentError $"Environment error, variable '{n}' not found in the env")
+            raise (type_error $"type inference error, variable '{n}' not found in the environment {env}")
 
     | Lambda(param, t, e) ->
         let param_type =
             match t with
             | Some p_t -> p_t
-            | None -> TyVar fresh_typevar
+            | None -> TyVar(fresh_typevar ())
 
         let env_within_lambda_param = (param, Forall(Set.empty, param_type)) :: env
         let t2, subst1 = typeinfer_expr env_within_lambda_param e
         let t1 = apply_subst param_type subst1
         (TyArrow(t1, t2), subst1)
 
-
     | App(e1, e2) ->
         let t1, subst1 = typeinfer_expr env e1
         let t2, subst2 = typeinfer_expr (apply_subst_env env subst1) e2
-        let var = TyVar fresh_typevar
+        let var = TyVar(fresh_typevar ())
         let subst3 = unify t1 (TyArrow(t2, var))
         let t = apply_subst var subst3
         (t, subst3 $ subst2)
@@ -190,7 +174,7 @@ let rec typeinfer_expr (env: scheme env) (e: expr) : ty * subst =
         let t3, s4 = typeinfer_expr env e3
         let s5 = unify t2 t3
         let s = s5 $ s4 $ s3 $ s2 $ s1
-        apply_subst t2 s, s
+        apply_subst t2 s, s //! note, apply substitution before return the value since it simplify the rule
 
     | Tuple l ->
         let mutable previous_subst = []
@@ -204,6 +188,32 @@ let rec typeinfer_expr (env: scheme env) (e: expr) : ty * subst =
         (TyTuple types, previous_subst)
 
     | BinOp(e1, op, e2) -> typeinfer_expr env (App(App(Var op, e1), e2))
+
+    | Let(var_name, type_annotation, value_expr, in_expr) ->
+        let t1, s1 = typeinfer_expr env value_expr
+        let s3 =
+            match type_annotation with
+            | None -> []
+            | Some t -> unify t1 t
+
+        let s1_to_env = apply_subst_env env s1
+        let sigma1 = gen s1_to_env t1
+        let t2, s2 = typeinfer_expr ((var_name, sigma1) :: s1_to_env) in_expr
+        (t2, s3 $ s2 $ s1)
+
+    | LetRec(fun_name, None, Lambda(param, param_tyo, e1), e2) ->
+        let t_var = TyVar(fresh_typevar ())
+        let empty_pol_vars: Set<tyvar> = Set.empty
+
+        let t1, s1 =
+            typeinfer_expr ((fun_name, Forall(empty_pol_vars, t_var)) :: env) (Lambda(param, param_tyo, e1))
+        //t1 = bool -> int
+        //s1 = alpha -> bool -> int ; x -> bool
+        let gamma1 = apply_subst_env env s1
+        let sigma1 = gen gamma1 t1
+        let t2, s2 = typeinfer_expr ((fun_name, sigma1) :: gamma1) e2
+        let s3 = unify t_var (apply_subst t1 s1)
+        (t2, s3 $ s2 $ s1)
 
 
 
@@ -246,6 +256,8 @@ let rec typecheck_expr (env: ty env) (e: expr) : ty =
         let te = typecheck_expr env' e
         TyArrow(t, te)
 
+
+    //TODO
     | Lambda(x, None, e) -> type_error "unannotated lambdas are not supported by the type checker"
 
     | App(e1, e2) ->
@@ -259,6 +271,7 @@ let rec typecheck_expr (env: ty env) (e: expr) : ty =
             tb
         | t1 -> type_error "left hand of application is not an arrow type: %O" t1
 
+    //TODO implement if e1 then e2
     | IfThenElse(e1, e2, Some e3) ->
         let t1 = typecheck_expr env e1
 
@@ -273,6 +286,16 @@ let rec typecheck_expr (env: ty env) (e: expr) : ty =
 
         t2
 
+    | IfThenElse(condition, expression, None) ->
+        let t1 = typecheck_expr env condition
+
+        if t1 <> TyBool then
+            type_error "bool expected in if guard, but got %O" t1
+
+        typecheck_expr env expression
+
+
+    //TODO missing &&, ||, <>, %
     | BinOp(e1, ("+" | "-" | "*" | "/" as op), e2) ->
         let t1 = typecheck_expr env e1
 
@@ -286,6 +309,7 @@ let rec typecheck_expr (env: ty env) (e: expr) : ty =
 
         TyInt
 
+    //TODO missing minus
     | UnOp("not", e) ->
         let t = typecheck_expr env e
 
