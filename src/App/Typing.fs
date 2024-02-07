@@ -16,7 +16,7 @@ let mutable c = 0
 let fresh_typevar () =
     let id = c
     c <- c + 1
-    id
+    TyVar id
 
 let reset_typevar_counter () = c <- 0
 
@@ -53,35 +53,45 @@ let apply_subst_scheme (Forall(pol_vars, t)) (subst: subst) =
 let apply_subst_env env subst =
     env |> List.map (fun (var, scheme) -> (var, apply_subst_scheme scheme subst))
 
+let conflict_in_subst subst =
+    List.tryFind
+        (fun ((type_var1, t1), (type_var2, t2)) -> type_var1 = type_var2 && t1 <> t2)
+        (List.allPairs subst subst)
+
+let circularity_in_subst subst =
+    List.tryFind (fun (type_var, t) -> is_typevar_into_type type_var t) subst
+
 let compose_subst subst1 subst2 =
     let composed_subst =
         (List.map (fun (type_var, t) -> (type_var, apply_subst t subst1)) subst2)
         @ subst1
 
-    try
-        let ((conflict_type_var, t1), (_, t2)) =
-            List.find
-                (fun ((type_var1, t1), (type_var2, t2)) -> type_var1 = type_var2 && t1 <> t2)
-                (List.allPairs composed_subst composed_subst)
+    let conflicts = conflict_in_subst composed_subst
 
-        raise ( type_error $"compose substitution error, conflict type variable {conflict_type_var} maps to type {t1} and {t2}")
+    match conflicts with
+    | Some((conflict_type_var, t1), (_, t2)) ->
+        raise (
+            type_error
+                $"compose substitution error, conflict type variable {conflict_type_var} maps to type {t1} and {t2}"
+        )
+    | _ -> ()
 
-        let circular_type_var, t =
-            List.find (fun (type_var, t) -> is_typevar_into_type type_var t) composed_subst
+    let circularity = circularity_in_subst composed_subst
 
+    match circularity with
+    | Some(circular_type_var, t) ->
         raise (type_error $"compose substitution error, circular type variable {circular_type_var} maps to type {t}") //circular_type_var, t
+    | _ -> ()
 
-    with :? System.Collections.Generic.KeyNotFoundException ->
-
-        composed_subst
+    composed_subst
 
 let ($) = compose_subst
 
 let rec unify t1 t2 =
     match t1, t2 with
     | TyName c1, TyName c2 when c1 = c2 -> []
-    | TyVar type_var, t
-    | t, TyVar type_var -> [ (type_var, t) ]
+    | _, TyVar type_var -> [ (type_var, t1) ]
+    | TyVar type_var, _ -> [ (type_var, t2) ]
     | TyArrow(t1, t2), TyArrow(t3, t4) -> (unify t1 t3) $ (unify t2 t4)
     | TyTuple tuple1, TyTuple tuple2 when tuple1.Length = tuple2.Length ->
         List.fold
@@ -104,19 +114,16 @@ let freevars_scheme (Forall(tvs, t)) = freevars_ty t - tvs
 let rec freevars_scheme_env env =
     List.fold (fun acc (_, type_scheme) -> acc + freevars_scheme type_scheme) Set.empty env
 
-let rec re (free_vars: Set<tyvar>) t =
-    let rec re_inner = re free_vars
+let rec inst (Forall(free_vars: Set<tyvar>, t)) =
+    let polymorphic_vars_subst =
+        free_vars
+        |> Set.toList
+        |> List.map (fun polymorphic_var -> (polymorphic_var, fresh_typevar ()))
 
-    match t with
-    | TyName _ -> t
-    | TyVar type_var when free_vars |> Set.exists (fun elm -> type_var = elm) -> TyVar(fresh_typevar ())
-    | TyVar _ -> t
-    | TyArrow(t1, t2) -> TyArrow(re_inner t1, re_inner t2)
-    | TyTuple tuple_types -> TyTuple(tuple_types |> List.map (fun t -> re_inner t))
+    apply_subst t polymorphic_vars_subst
 
-let inst (Forall(pol_vars, t)) = re pol_vars t
-
-let gen env t = Forall(freevars_ty t - freevars_scheme_env env, t)
+let gen env t =
+    Forall(freevars_ty t - freevars_scheme_env env, t)
 
 // basic environment: add builtin operators at will
 //
@@ -140,31 +147,35 @@ let rec typeinfer_expr (env: scheme env) (e: expr) : ty * subst =
     | Lit(LChar _) -> TyChar, []
     | Lit LUnit -> TyUnit, []
 
-    | Var n ->
+    | Var var_name ->
         try
-            let s = lookup env n
+            let s = lookup env var_name
             let t = inst s
             (t, [])
         with :? System.Collections.Generic.KeyNotFoundException ->
-            raise (type_error $"type inference error, variable '{n}' not found in the environment {env}")
+            raise (type_error $"type inference error, variable '{var_name}' not found in the environment {env}")
 
-    | Lambda(param, t, e) ->
-        let param_type =
-            match t with
-            | Some p_t -> p_t
-            | None -> TyVar(fresh_typevar ())
-
-        let env_within_lambda_param = (param, Forall(Set.empty, param_type)) :: env
-        let t2, subst1 = typeinfer_expr env_within_lambda_param e
+    | Lambda(param, type_annotation, body) ->
+        let param_type = fresh_typevar ()
+        let env_within_param = (param, Forall(Set.empty, param_type)) :: env
+        let t2, subst1 = typeinfer_expr env_within_param body
         let t1 = apply_subst param_type subst1
-        (TyArrow(t1, t2), subst1)
 
-    | App(e1, e2) ->
-        let t1, subst1 = typeinfer_expr env e1
-        let t2, subst2 = typeinfer_expr (apply_subst_env env subst1) e2
-        let var = TyVar(fresh_typevar ())
-        let subst3 = unify t1 (TyArrow(t2, var))
-        let t = apply_subst var subst3
+        let subst2 =
+            match type_annotation with
+            | None -> []
+            | Some t -> unify t1 t
+
+        (TyArrow(t1, t2), subst2 $ subst1)
+
+    | App(lambda, argument) ->
+        let t1, subst1 = typeinfer_expr env lambda
+        let t2, subst2 = typeinfer_expr (apply_subst_env env subst1) argument
+
+
+        let result_type = fresh_typevar ()
+        let subst3 = unify t1 (TyArrow(t2, result_type))
+        let t = apply_subst result_type subst3
         (t, subst3 $ subst2)
 
     | IfThenElse(e1, e2, Some e3) ->
@@ -191,6 +202,7 @@ let rec typeinfer_expr (env: scheme env) (e: expr) : ty * subst =
 
     | Let(var_name, type_annotation, value_expr, in_expr) ->
         let t1, s1 = typeinfer_expr env value_expr
+
         let s3 =
             match type_annotation with
             | None -> []
@@ -202,7 +214,7 @@ let rec typeinfer_expr (env: scheme env) (e: expr) : ty * subst =
         (t2, s3 $ s2 $ s1)
 
     | LetRec(fun_name, None, Lambda(param, param_tyo, e1), e2) ->
-        let t_var = TyVar(fresh_typevar ())
+        let t_var = fresh_typevar ()
         let empty_pol_vars: Set<tyvar> = Set.empty
 
         let t1, s1 =

@@ -18,7 +18,8 @@ let interpret_expr tenv venv e =
     printfn "AST:\t%A\npretty:\t%s" e (pretty_expr e)
     #endif
     let inference_type, substitution = Typing.typeinfer_expr [] e
-    pretty_ty inference_type |> ignore
+    let res_type = Typing.apply_subst inference_type substitution
+    pretty_ty res_type |> ignore
     //let t = Typing.typecheck_expr tenv e
     #if DEBUG
     printfn "type:\t%s" (pretty_ty inference_type)
@@ -27,7 +28,7 @@ let interpret_expr tenv venv e =
     #if DEBUG
     //printfn "value:\t%s\n" (pretty_value v)
     #endif
-    Typing.apply_subst inference_type substitution, VLit (LInt 0)
+    res_type, VLit (LInt 0)
 
 let trap f =
     try f ()
