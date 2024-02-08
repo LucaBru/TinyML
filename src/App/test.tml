@@ -5,12 +5,4 @@
 
 // line comment
 
-let f x y = (x, y) in
-let g x = f x x
-in ()
-
-
-
-
-
-
+let f x y = (x, y) in f 0 "ciao"

@@ -128,14 +128,14 @@ let gen env t =
 // basic environment: add builtin operators at will
 //
 
-let math_operators =
+let math_binary_operators =
     [ ("+", [ TyInt; TyFloat; TyChar; TyString ])
       ("-", [ TyInt; TyFloat ])
       ("*", [ TyInt; TyFloat ])
       ("/", [ TyInt; TyFloat ])
       ("%", [ TyInt; TyFloat ]) ]
 
-let comparison_operators =
+let comparison_binary_operators =
     [ ("<", [ TyInt; TyFloat ])
       ("<=", [ TyInt; TyFloat ])
       (">", [ TyInt; TyFloat ])
@@ -145,10 +145,12 @@ let comparison_operators =
       ("and", [ TyBool ])
       ("or", [ TyBool ]) ]
 
-let base_operators = math_operators @ comparison_operators
+let unary_operators = [ ("not", [ TyBool ]); ("-", [ TyInt; TyFloat ]) ]
+
+let binary_operators = math_binary_operators @ comparison_binary_operators
 
 let (|MathOperator|ComparisonOperator|) op =
-    if List.exists (fun (o, _) -> o = op) math_operators then
+    if List.exists (fun (o, _) -> o = op) math_binary_operators then
         MathOperator
     else
         ComparisonOperator
@@ -168,20 +170,25 @@ let rec typeinfer_expr (env: scheme env) (e: expr) : ty * subst =
             let t = inst s
             (t, [])
         with :? System.Collections.Generic.KeyNotFoundException ->
-            raise (type_error $"type inference error, variable '{var_name}' not found in the environment {env}")
+            raise (type_error $"type inference: variable '{var_name}' not found in the environment")
 
     | Lambda(param, type_annotation, body) ->
         let param_type = fresh_typevar ()
-        let env_within_param = (param, Forall(Set.empty, param_type)) :: env
-        let t2, subst1 = typeinfer_expr env_within_param body
-        let t1 = apply_subst param_type subst1
 
-        let subst2 =
+        let subst' =
             match type_annotation with
             | None -> []
-            | Some t -> unify t1 t
+            | Some t -> unify param_type t
 
-        (TyArrow(t1, t2), subst2 $ subst1)
+        let env_within_param =
+            (param, Forall(Set.empty, apply_subst param_type subst')) :: env
+
+        let t2, subst1 = typeinfer_expr env_within_param body
+
+        let composed_subst = subst1 $ subst'
+        let t1 = apply_subst param_type composed_subst
+
+        (apply_subst (TyArrow(t1, t2)) composed_subst, composed_subst)
 
     | App(lambda, argument) ->
         let t1, subst1 = typeinfer_expr env lambda
@@ -218,27 +225,63 @@ let rec typeinfer_expr (env: scheme env) (e: expr) : ty * subst =
     | BinOp(left_expr, op, right_expr) ->
         let left_type, subst1 = typeinfer_expr env left_expr
         let right_type, subst2 = typeinfer_expr env right_expr
-
         let subst3 = unify left_type right_type
 
         let operation_result_type = apply_subst left_type (subst3 $ subst2 $ subst1)
-        printfn $"type inferred : {operation_result_type}"
 
         try
-            base_operators
-            |> List.find (fun (operator, _) -> op = operator)
-            |> snd
-            |> List.find (fun c -> c = operation_result_type)
-            |> ignore
+            let operator_details =
+                binary_operators |> List.find (fun (operator, _) -> op = operator)
+
+
+            let composed_subst =
+                (match operation_result_type with
+                 | TyVar _ ->
+                     //forced type to a specific one if both operands have type type var
+                     let forced_type = operator_details |> snd |> List.head
+                     unify operation_result_type forced_type
+
+                 | _ ->
+                     operator_details
+                     |> snd
+                     |> List.find (fun c -> c = operation_result_type)
+                     |> ignore
+
+                     [])
+                $ subst3
+                $ subst2
+                $ subst1
 
             match op with
-            | MathOperator -> operation_result_type, subst3 $ subst2 $ subst1
-            | ComparisonOperator -> TyBool, subst3 $ subst2 $ subst1
+            | MathOperator -> operation_result_type, composed_subst
+            | ComparisonOperator -> TyBool, composed_subst
 
         with :? System.Collections.Generic.KeyNotFoundException ->
             raise (
                 type_error $"type inference: try to use the binary operator {op} with non supported type {left_type}"
             )
+
+    | UnOp(operator, expr) ->
+        let expr_type, subst = typeinfer_expr env expr
+
+        try
+            match expr_type with
+            | TyVar _ ->
+                let forced_type =
+                    List.find (fun (op, _) -> op = operator) unary_operators |> snd |> List.head
+
+                let subst' = unify expr_type forced_type
+                forced_type, subst' $ subst
+            | _ ->
+                List.find (fun (op, _) -> op = operator) unary_operators
+                |> snd
+                |> List.exists (fun acceptable_ty -> acceptable_ty = expr_type)
+                |> ignore
+
+                apply_subst expr_type subst, subst
+        with :? System.Collections.Generic.KeyNotFoundException ->
+            raise (type_error $"type inference: error while inference unary operator {operator}")
+
 
     | Let(var_name, type_annotation, value_expr, in_expr) ->
         let t1, s1 = typeinfer_expr env value_expr
@@ -253,9 +296,8 @@ let rec typeinfer_expr (env: scheme env) (e: expr) : ty * subst =
         let t2, s2 = typeinfer_expr ((var_name, sigma1) :: s1_to_env) in_expr
         (t2, s3 $ s2 $ s1)
 
-    | LetRec(lambda_name, type_annotation, Lambda(param, lambda_param_type_annotation, body), in_expression) ->
+    | LetRec(lambda_name, type_annotation, (Lambda(param, lambda_param_type_annotation, body) as lambda), in_expression) ->
         let lambda_type = fresh_typevar ()
-        let lambda = Lambda(param, lambda_param_type_annotation, body)
 
         let t1, s1 =
             typeinfer_expr ((lambda_name, Forall(Set.empty, lambda_type)) :: env) lambda
@@ -265,14 +307,10 @@ let rec typeinfer_expr (env: scheme env) (e: expr) : ty * subst =
             | None -> []
             | Some t -> unify t1 t
 
-        //t1 = bool -> int
-        //s1 = alpha -> bool -> int ; x -> bool
         let env1 = apply_subst_env env s1
         let t2, s2 = typeinfer_expr ((lambda_name, gen env1 t1) :: env1) in_expression
         let s3 = unify lambda_type (apply_subst t1 s1)
         (t2, s4 $ s3 $ s2 $ s1)
-
-    // TODO complete this implementation
 
     | _ -> unexpected_error "typeinfer_expr: unsupported expression: %s [AST: %A]" (pretty_expr e) e
 
@@ -311,8 +349,6 @@ let rec typecheck_expr (env: ty env) (e: expr) : ty =
         let te = typecheck_expr env' e
         TyArrow(t, te)
 
-
-    //TODO
     | Lambda(x, None, e) -> type_error "unannotated lambdas are not supported by the type checker"
 
     | App(e1, e2) ->

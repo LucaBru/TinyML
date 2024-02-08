@@ -20,15 +20,16 @@ let interpret_expr tenv venv e =
     printfn "AST:\t%A\npretty:\t%s" e (pretty_expr e)
 #endif
     let inferred_type, substitution = Typing.typeinfer_expr tenv e
+    let final_type = Typing.apply_subst inferred_type substitution
     //let t = Typing.typecheck_expr tenv e
 #if DEBUG
-    printfn "type:\t%s" (pretty_ty inferred_type)
+    printfn "type:\t%s" (pretty_ty final_type)
 #endif
     let v = Eval.eval_expr venv e
 #if DEBUG
     printfn "value:\t%s\n" (pretty_value v)
 #endif
-    Typing.apply_subst inferred_type substitution, v
+    final_type, v
 
 let trap f =
     try

@@ -35,9 +35,9 @@ let rec eval_expr (venv: value env) (e: expr) : value =
     | IfThenElse(guard_expr, _, Some false_branch_expr) when eval_expr venv guard_expr = VLit(LBool false) ->
         eval_expr venv false_branch_expr
 
-    | BinOp(e1, "+", e2) -> math_op (+) (+) venv e1 e2
+    | BinOp(e1, "+", e2) -> sum_op venv e1 e2
     | BinOp(e1, "-", e2) -> math_op (-) (-) venv e1 e2
-    | BinOp(e1, "*", e2) -> math_op (*) (*) venv e1 e2
+    | BinOp(e1, "*", e2) -> math_op ( * ) ( * ) venv e1 e2
     | BinOp(e1, "/", e2) -> math_op (/) (/) venv e1 e2
     | BinOp(e1, "%", e2) -> math_op (%) (%) venv e1 e2
     | BinOp(e1, ">", e2) -> numerical_bool_op (>) (>) venv e1 e2
@@ -45,10 +45,14 @@ let rec eval_expr (venv: value env) (e: expr) : value =
     | BinOp(e1, "<", e2) -> numerical_bool_op (<) (<) venv e1 e2
     | BinOp(e1, "<=", e2) -> numerical_bool_op (<=) (<=) venv e1 e2
     | BinOp(e1, "=", e2) -> numerical_equal (=) venv e1 e2
-    | BinOp(e1, "<>", e2) -> numerical_equal (<>) venv e1 e2
+    | BinOp(e1, "<>", e2) ->
+        if (numerical_equal (=) venv e1 e2) = VLit(LBool true) then
+            VLit(LBool false)
+        else
+            VLit(LBool true)
     | BinOp(e1, "and", e2) -> bool_op (&&) venv e1 e2
     | BinOp(e1, "or", e2) -> bool_op (||) venv e1 e2
-    
+
     | UnOp("not", e) -> un_op_not (not) venv e
     | UnOp("-", e) -> minus_op venv e
 
@@ -63,16 +67,28 @@ let rec eval_expr (venv: value env) (e: expr) : value =
 
     | _ -> unexpected_error "eval_expr: unsupported expression: %s [AST: %A]" (pretty_expr e) e
 
+and sum_op venv e1 e2 =
+    let v1 = eval_expr venv e1
+    let v2 = eval_expr venv e2
+
+    match v1, v2 with
+    | VLit(LInt x) as lit1, VLit(LInt y) -> math_op (+) (+) venv e1 e2
+    | VLit(LFloat x), VLit(LFloat y) -> math_op (+) (+) venv e1 e2
+    | VLit(LChar x), VLit(LChar y) -> VLit(LChar(x + y))
+    | VLit(LString x), VLit(LString y) -> VLit(LString(x + y))
+    | _ ->
+        unexpected_error
+            "eval_expr: illegal operands in binary operator (+): %s + %s"
+            (pretty_value v1)
+            (pretty_value v2)
+
 and math_op op_int op_float env e1 e2 =
     let v1 = eval_expr env e1
     let v2 = eval_expr env e2
 
     match v1, v2 with
-    | VLit(LString x), VLit(LString y) -> VLit(LString(x + y))
     | VLit(LInt x), VLit(LInt y) -> VLit(LInt(op_int x y))
     | VLit(LFloat x), VLit(LFloat y) -> VLit(LFloat(op_float x y))
-    | VLit(LInt x), VLit(LFloat y) -> VLit(LFloat(op_float (float x) y))
-    | VLit(LFloat x), VLit(LInt y) -> VLit(LFloat(op_float x (float y)))
     | _ ->
         unexpected_error
             "eval_expr: illegal operands in binary operator (+): %s + %s"
@@ -86,8 +102,7 @@ and numerical_bool_op op_int op_float env e1 e2 =
     match v1, v2 with
     | VLit(LInt x), VLit(LInt y) -> VLit(LBool(op_int x y))
     | VLit(LFloat x), VLit(LFloat y) -> VLit(LBool(op_float x y))
-    | VLit(LInt x), VLit(LFloat y) -> VLit(LBool(op_float (float x) y))
-    | VLit(LFloat x), VLit(LInt y) -> VLit(LBool(op_float x (float y)))
+
     | _ -> unexpected_error $"eval_expr: illegal operands in binary operator (+): {pretty_value v1} + {pretty_value v2}"
 
 and numerical_equal op env e1 e2 =
@@ -95,8 +110,12 @@ and numerical_equal op env e1 e2 =
     let v2 = eval_expr env e2
 
     match v1, v2 with
-    | VLit(LInt x), VLit(LInt y) -> VLit(LBool(op x y))
-    | _ -> unexpected_error $"eval_expr: The =/<> operator works only on int"
+    | VLit(LInt x), VLit(LInt y) -> VLit(LBool(x = y))
+    | VLit(LFloat x), VLit(LFloat y) -> VLit(LBool(x = y))
+    | VLit(LChar x), VLit(LChar y) -> VLit(LBool(x = y))
+    | VLit(LString x), VLit(LString y) -> VLit(LBool(x = y))
+    | VLit(LBool x), VLit(LBool y) -> VLit(LBool(x = y))
+    | _ -> unexpected_error $"eval_expr: The =/<> operators work only on int, float, char, string and boolean"
 
 and bool_op op env e1 e2 =
     let v1 = eval_expr env e1

@@ -161,7 +161,12 @@ let pretty_ty t =
     let rec inner_pretty_type t =
         match t with
         | TyName s -> s
-        | TyArrow(t1, t2) -> sprintf "%s -> %s" (inner_pretty_type t1) (inner_pretty_type t2)
+        | TyArrow(t1, t2) ->
+            let domain_str= (inner_pretty_type t1)
+            let codomain_str = (inner_pretty_type t2)
+            match t1 with
+            | TyArrow (_, _) -> sprintf "(%s) -> %s" domain_str codomain_str
+            | _ -> sprintf "%s -> %s" domain_str codomain_str
         | TyVar n ->
             let _, greek_letter = List.find (fun (type_var, _) -> type_var = n) type_vars
             $"'{greek_letter}"
@@ -179,6 +184,7 @@ let pretty_lit lit =
     | LBool false -> "false"
     | LUnit -> "()"
 
+
 let rec pretty_expr e =
     match e with
     | Lit lit -> pretty_lit lit
@@ -186,8 +192,11 @@ let rec pretty_expr e =
     | Lambda(x, None, e) -> sprintf "fun %s -> %s" x (pretty_expr e)
     | Lambda(x, Some t, e) -> sprintf "fun (%s : %s) -> %s" x (pretty_ty t) (pretty_expr e)
 
-    // TODO write a better pretty-printer that puts brackets on non-trivial expressions appearing on the right side of an application
-    | App(e1, e2) -> sprintf "%s %s" (pretty_expr e1) (pretty_expr e2)
+    | App(e1, e2) ->
+        match e2 with
+        | App _ -> sprintf "%s (%s)" (pretty_expr e1) (pretty_expr e2)
+        | _ -> sprintf "%s %s" (pretty_expr e1) (pretty_expr e2)
+        
 
     | Var x -> x
 
@@ -209,7 +218,23 @@ let rec pretty_expr e =
 
     | Tuple es -> sprintf "(%s)" (pretty_tupled pretty_expr es)
 
-    | BinOp(e1, op, e2) -> sprintf "%s %s %s" (pretty_expr e1) op (pretty_expr e2)
+    | BinOp(e1, op, e2) ->
+        match e1, op, e2 with
+        | (_, "*", _)
+        | (_, "/", _) ->
+            match e1, e2 with
+            | ((BinOp (_, "+", _ )), (BinOp (_, "+", _ ))) 
+            | ((BinOp (_, "+", _ )), (BinOp (_, "-", _ )))
+            | ((BinOp (_, "-", _ )), (BinOp (_, "+", _ )))
+            | ((BinOp (_, "-", _ )), (BinOp (_, "-", _ ))) -> sprintf "(%s) %s (%s)" (pretty_expr e1) op (pretty_expr e2)
+            | _ , (BinOp (_, "+", _ ))
+            | _, (BinOp (_, "-", _ )) -> sprintf "%s %s (%s)" (pretty_expr e1) op (pretty_expr e2)
+            | (BinOp (_, "-", _ )), _
+            | (BinOp (_, "-", _ )), _ -> sprintf "(%s) %s %s" (pretty_expr e1) op (pretty_expr e2)
+            | _ -> sprintf "%s %s %s" (pretty_expr e1) op (pretty_expr e2)
+        | _ -> sprintf "%s %s %s" (pretty_expr e1) op (pretty_expr e2)
+
+        
 
     | UnOp(op, e) -> sprintf "%s %s" op (pretty_expr e)
 
