@@ -128,12 +128,26 @@ let gen env t =
 // basic environment: add builtin operators at will
 //
 
+let math_operators =
+    [ ("*", TyArrow(TyInt, TyArrow(TyInt, TyInt)), ( * ))
+      ("-", TyArrow(TyInt, TyArrow(TyInt, TyInt)), (-))
+      ("/", TyArrow(TyInt, TyArrow(TyInt, TyInt)), (/)) ]
+
+let comparison_operators = [ ("<", TyArrow(TyInt, TyArrow(TyInt, TyBool)), (<)) ]
+
 let gamma0 =
-    [ ("+", TyArrow(TyInt, TyArrow(TyInt, TyInt)))
-      ("-", TyArrow(TyInt, TyArrow(TyInt, TyInt)))
-      ("*", TyArrow(TyInt, TyArrow(TyInt, TyInt)))
-      ("/", TyArrow(TyInt, TyArrow(TyInt, TyInt)))
-      ("<", TyArrow(TyInt, TyArrow(TyInt, TyBool))) ]
+    let m =
+        math_operators |> List.map (fun (operator, op_type, _) -> (operator, op_type))
+
+    let c =
+        comparison_operators
+        |> List.map (fun (operator, op_type, _) -> (operator, op_type))
+
+    m @ c
+
+let scheme_gamma0 =
+    gamma0
+    |> List.map (fun (operator, operator_type) -> (operator, Forall(Set.empty, operator_type)))
 
 // type inference
 //
@@ -185,7 +199,7 @@ let rec typeinfer_expr (env: scheme env) (e: expr) : ty * subst =
         let t3, s4 = typeinfer_expr env e3
         let s5 = unify t2 t3
         let s = s5 $ s4 $ s3 $ s2 $ s1
-        apply_subst t2 s, s //! note, apply substitution before return the value since it simplify the rule
+        apply_subst t2 s, s
 
     | Tuple expressions ->
         let mutable previous_subst = []
@@ -193,7 +207,9 @@ let rec typeinfer_expr (env: scheme env) (e: expr) : ty * subst =
         let tuple_types =
             expressions
             |> List.map (fun expr ->
-                let inferred_type, previous_subst = typeinfer_expr (apply_subst_env env previous_subst) expr
+                let inferred_type, previous_subst =
+                    typeinfer_expr (apply_subst_env env previous_subst) expr
+
                 inferred_type)
 
         (TyTuple tuple_types, previous_subst)
@@ -213,21 +229,24 @@ let rec typeinfer_expr (env: scheme env) (e: expr) : ty * subst =
         let t2, s2 = typeinfer_expr ((var_name, sigma1) :: s1_to_env) in_expr
         (t2, s3 $ s2 $ s1)
 
-    | LetRec(fun_name, None, Lambda(param, param_tyo, e1), e2) ->
-        let t_var = fresh_typevar ()
-        let empty_pol_vars: Set<tyvar> = Set.empty
+    | LetRec(lambda_name, type_annotation, Lambda(param, lambda_param_type_annotation, body), in_expression) ->
+        let lambda_type = fresh_typevar ()
+        let lambda = Lambda(param, lambda_param_type_annotation, body)
 
         let t1, s1 =
-            typeinfer_expr ((fun_name, Forall(empty_pol_vars, t_var)) :: env) (Lambda(param, param_tyo, e1))
+            typeinfer_expr ((lambda_name, Forall(Set.empty, lambda_type)) :: env) lambda
+
+        let s4 =
+            match type_annotation with
+            | None -> []
+            | Some t -> unify t1 t
+
         //t1 = bool -> int
         //s1 = alpha -> bool -> int ; x -> bool
-        let gamma1 = apply_subst_env env s1
-        let sigma1 = gen gamma1 t1
-        let t2, s2 = typeinfer_expr ((fun_name, sigma1) :: gamma1) e2
-        let s3 = unify t_var (apply_subst t1 s1)
-        (t2, s3 $ s2 $ s1)
-
-
+        let env1 = apply_subst_env env s1
+        let t2, s2 = typeinfer_expr ((lambda_name, gen env1 t1) :: env1) in_expression
+        let s3 = unify lambda_type (apply_subst t1 s1)
+        (t2, s4 $ s3 $ s2 $ s1)
 
     // TODO complete this implementation
 
