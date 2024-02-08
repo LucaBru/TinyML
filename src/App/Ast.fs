@@ -136,12 +136,38 @@ let pretty_env p env =
 // print any tuple given a printer p for its elements
 let pretty_tupled p l = flatten p ", " l
 
-let rec pretty_ty t =
+let letters = [| 'a' .. 'z' |] |> Array.map (fun c -> c.ToString())
+
+let rec greek_letter (number: int) =
+    if number < 26 then
+        letters[number]
+    else
+        greek_letter (number - 26) + letters[number % 26]
+
+let rec type_vars_into_type t =
     match t with
-    | TyName s -> s
-    | TyArrow(t1, t2) -> sprintf "%s -> %s" (pretty_ty t1) (pretty_ty t2)
-    | TyVar n -> sprintf "'%d" n
-    | TyTuple ts -> sprintf "(%s)" (pretty_tupled pretty_ty ts)
+    | TyVar numb -> Set.singleton numb
+    | TyArrow(domain, codomain) -> type_vars_into_type domain + type_vars_into_type codomain
+    | TyTuple types -> List.fold (fun acc tuple_type -> acc + type_vars_into_type tuple_type) Set.empty types
+    | _ -> Set.empty
+
+let pretty_ty t =
+    let type_vars =
+        type_vars_into_type t
+        |> List.ofSeq
+        |> List.sort
+        |> List.mapi (fun index type_var -> (type_var, greek_letter index))
+
+    let rec inner_pretty_type t =
+        match t with
+        | TyName s -> s
+        | TyArrow(t1, t2) -> sprintf "%s -> %s" (inner_pretty_type t1) (inner_pretty_type t2)
+        | TyVar n ->
+            let _, greek_letter = List.find (fun (type_var, _) -> type_var = n) type_vars
+            $"'{greek_letter}"
+        | TyTuple ts -> sprintf "(%s)" (pretty_tupled inner_pretty_type ts)
+
+    inner_pretty_type t
 
 let pretty_lit lit =
     match lit with
