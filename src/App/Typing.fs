@@ -100,7 +100,7 @@ let rec unify t1 t2 =
             []
             (List.zip tuple1 tuple2)
 
-    | _ -> raise (type_error $"unification error, on types {t1} and {t2}")
+    | _ -> raise (type_error $"unification error, try to unify types {t1} and {t2}")
 
 let rec freevars_ty t =
     match t with
@@ -129,28 +129,28 @@ let gen env t =
 //
 
 let math_operators =
-    [ ("*", TyArrow(TyInt, TyArrow(TyInt, TyInt)), ( * ))
-      ("-", TyArrow(TyInt, TyArrow(TyInt, TyInt)), (-))
-      ("/", TyArrow(TyInt, TyArrow(TyInt, TyInt)), (/)) ]
+    [ ("+", [ TyInt; TyFloat; TyChar; TyString ])
+      ("-", [ TyInt; TyFloat ])
+      ("*", [ TyInt; TyFloat ])
+      ("/", [ TyInt; TyFloat ]) ]
 
-let comparison_operators = [ ("<", TyArrow(TyInt, TyArrow(TyInt, TyBool)), (<)) ]
+let comparison_operators =
+    [ ("<", [ TyInt; TyFloat ])
+      ("<=", [ TyInt; TyFloat ])
+      (">", [ TyInt; TyFloat ])
+      (">=", [ TyInt; TyFloat ])
+      ("<>", [ TyInt; TyFloat; TyChar; TyString; TyBool ])
+      ("=", [ TyInt; TyFloat; TyChar; TyString; TyBool ])
+      ("and", [ TyBool ])
+      ("or", [ TyBool ]) ]
 
-let gamma0 =
-    let m =
-        math_operators |> List.map (fun (operator, op_type, _) -> (operator, op_type))
+let base_operators = math_operators @ comparison_operators
 
-    let c =
-        comparison_operators
-        |> List.map (fun (operator, op_type, _) -> (operator, op_type))
-
-    m @ c
-
-let scheme_gamma0 =
-    gamma0
-    |> List.map (fun (operator, operator_type) -> (operator, Forall(Set.empty, operator_type)))
-
-// type inference
-//
+let (|MathOperator|ComparisonOperator|) op =
+    if List.exists (fun (o, _) -> o = op) math_operators then
+        MathOperator
+    else
+        ComparisonOperator
 
 let rec typeinfer_expr (env: scheme env) (e: expr) : ty * subst =
     match e with
@@ -214,7 +214,31 @@ let rec typeinfer_expr (env: scheme env) (e: expr) : ty * subst =
 
         (TyTuple tuple_types, previous_subst)
 
-    | BinOp(e1, op, e2) -> typeinfer_expr env (App(App(Var op, e1), e2))
+    | BinOp(left_expr, op, right_expr) ->
+        let left_type, subst1 = typeinfer_expr env left_expr
+        let right_type, subst2 = typeinfer_expr env right_expr
+
+        if left_type <> right_type then
+            raise (
+                type_error
+                    $"type inference: try to use binary operator {op} with different types {left_type} and {right_type}"
+            )
+
+        try
+            base_operators
+            |> List.find (fun (operator, _) -> op = operator)
+            |> snd
+            |> List.find (fun c -> c = left_type)
+            |> ignore
+
+            match op with
+            | MathOperator -> left_type, subst2 $ subst1
+            | ComparisonOperator -> TyBool, subst2 $ subst1
+
+        with :? System.Collections.Generic.KeyNotFoundException ->
+            raise (
+                type_error $"type inference: try to use the binary operator {op} with non supported type {left_type}"
+            )
 
     | Let(var_name, type_annotation, value_expr, in_expr) ->
         let t1, s1 = typeinfer_expr env value_expr
