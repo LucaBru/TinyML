@@ -132,7 +132,8 @@ let math_operators =
     [ ("+", [ TyInt; TyFloat; TyChar; TyString ])
       ("-", [ TyInt; TyFloat ])
       ("*", [ TyInt; TyFloat ])
-      ("/", [ TyInt; TyFloat ]) ]
+      ("/", [ TyInt; TyFloat ])
+      ("%", [ TyInt; TyFloat ]) ]
 
 let comparison_operators =
     [ ("<", [ TyInt; TyFloat ])
@@ -218,22 +219,21 @@ let rec typeinfer_expr (env: scheme env) (e: expr) : ty * subst =
         let left_type, subst1 = typeinfer_expr env left_expr
         let right_type, subst2 = typeinfer_expr env right_expr
 
-        if left_type <> right_type then
-            raise (
-                type_error
-                    $"type inference: try to use binary operator {op} with different types {left_type} and {right_type}"
-            )
+        let subst3 = unify left_type right_type
+
+        let operation_result_type = apply_subst left_type (subst3 $ subst2 $ subst1)
+        printfn $"type inferred : {operation_result_type}"
 
         try
             base_operators
             |> List.find (fun (operator, _) -> op = operator)
             |> snd
-            |> List.find (fun c -> c = left_type)
+            |> List.find (fun c -> c = operation_result_type)
             |> ignore
 
             match op with
-            | MathOperator -> left_type, subst2 $ subst1
-            | ComparisonOperator -> TyBool, subst2 $ subst1
+            | MathOperator -> operation_result_type, subst3 $ subst2 $ subst1
+            | ComparisonOperator -> TyBool, subst3 $ subst2 $ subst1
 
         with :? System.Collections.Generic.KeyNotFoundException ->
             raise (
