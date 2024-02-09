@@ -201,10 +201,18 @@ let rec pretty_expr e =
     | Lambda(x, Some t, e) -> sprintf "fun (%s : %s) -> %s" x (pretty_ty t) (pretty_expr e)
 
     | App(e1, e2) ->
-        match e2 with
-        | UnOp _
-        | App _ -> sprintf "%s (%s)" (pretty_expr e1) (pretty_expr e2)
-        | _ -> sprintf "%s %s" (pretty_expr e1) (pretty_expr e2)
+        let second_expr_string =
+            match e2 with
+            | UnOp _
+            | Lit _ -> sprintf "%s" (pretty_expr e1)
+            | _ -> sprintf "(%s)" (pretty_expr e1)
+
+        let first_expr_string =
+            match e1 with
+            | Lambda _ -> sprintf "(%s)" (pretty_expr e2)
+            | _ -> sprintf "%s" (pretty_expr e2)
+
+        sprintf ("%s %s") first_expr_string second_expr_string
 
     | Var x -> x
 

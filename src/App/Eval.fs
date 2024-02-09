@@ -26,6 +26,9 @@ let rec eval_expr (venv: value env) (e: expr) : value =
         | Closure(venv', x, e) ->
             let venv' = (x, v2) :: venv'
             eval_expr venv' e
+        | RecClosure (venv', lambda_name, lambda_param, lambda_body) as rec_closure ->
+            let venv' = [(lambda_param, v2)] @ [(lambda_name, rec_closure)] @ venv'
+            eval_expr venv' lambda_body
 
         | _ -> unexpected_error "non-closure on left hand of application"
 

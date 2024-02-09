@@ -70,6 +70,7 @@ let compose_subst subst1 subst2 =
     let composed_subst =
         (List.map (fun (type_var, t) -> (type_var, apply_subst t subst1)) subst2)
         @ subst1
+        |> List.distinct
 
     //search for conflicts
     let conflicts = conflict_in_subst composed_subst
@@ -78,7 +79,7 @@ let compose_subst subst1 subst2 =
     | Some((conflict_type_var, t1), (_, t2)) ->
         raise (
             type_error
-                $"compose substitution error: conflict type variable {conflict_type_var} maps to type {t1} and {t2}"
+                $"compose substitution error: conflict type variable {pretty_ty (TyVar conflict_type_var)} maps to type {t1} and {t2}"
         )
     | _ -> ()
 
@@ -281,6 +282,7 @@ let rec typeinfer_expr (env: scheme env) (e: expr) : ty * subst =
         let expr_type, subst = typeinfer_expr env expr
 
         printfn $"operator {op} => expression type: {expr_type}"
+
         try
             (* same behaviour of the lambda*)
             match expr_type with
@@ -302,7 +304,7 @@ let rec typeinfer_expr (env: scheme env) (e: expr) : ty * subst =
         with :? System.Collections.Generic.KeyNotFoundException ->
             raise (type_error $"type inference: unary operator {op} not defined for type {expr_type}")
 
-    | Let(var_name, type_annotation, value_expr, in_expr) ->        
+    | Let(var_name, type_annotation, value_expr, in_expr) ->
         let t1, subst1 = typeinfer_expr env value_expr
 
         let type_annotation_subst =
@@ -310,10 +312,10 @@ let rec typeinfer_expr (env: scheme env) (e: expr) : ty * subst =
             | None -> []
             | Some t -> unify t1 t
 
-        let subst1_env = apply_subst_env env (subst1 $type_annotation_subst)
+        let subst1_env = apply_subst_env env (subst1 $ type_annotation_subst)
         let sigma1 = gen subst1_env t1
         let t2, subst2 = typeinfer_expr ((var_name, sigma1) :: subst1_env) in_expr
-        let theta = type_annotation_subst $ subst2 $ subst1 
+        let theta = type_annotation_subst $ subst2 $ subst1
         apply_subst t2 theta, theta
 
     | LetRec(lambda_name, type_annotation, (Lambda(_, _, _) as lambda), in_expression) ->
