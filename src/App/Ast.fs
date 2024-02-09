@@ -162,10 +162,11 @@ let pretty_ty t =
         match t with
         | TyName s -> s
         | TyArrow(t1, t2) ->
-            let domain_str= (inner_pretty_type t1)
+            let domain_str = (inner_pretty_type t1)
             let codomain_str = (inner_pretty_type t2)
+
             match t1 with
-            | TyArrow (_, _) -> sprintf "(%s) -> %s" domain_str codomain_str
+            | TyArrow(_, _) -> sprintf "(%s) -> %s" domain_str codomain_str
             | _ -> sprintf "%s -> %s" domain_str codomain_str
         | TyVar n ->
             let _, greek_letter = List.find (fun (type_var, _) -> type_var = n) type_vars
@@ -184,6 +185,13 @@ let pretty_lit lit =
     | LBool false -> "false"
     | LUnit -> "()"
 
+//low to high priority binary operators
+let binary_operators_priority =
+    [ [ "or" ]
+      [ "and" ]
+      [ ">"; ">="; "<"; "<="; "="; "<>" ]
+      [ "+"; "-" ]
+      [ "*"; "/"; "%" ] ]
 
 let rec pretty_expr e =
     match e with
@@ -194,9 +202,9 @@ let rec pretty_expr e =
 
     | App(e1, e2) ->
         match e2 with
+        | UnOp _
         | App _ -> sprintf "%s (%s)" (pretty_expr e1) (pretty_expr e2)
         | _ -> sprintf "%s %s" (pretty_expr e1) (pretty_expr e2)
-        
 
     | Var x -> x
 
@@ -219,24 +227,29 @@ let rec pretty_expr e =
     | Tuple es -> sprintf "(%s)" (pretty_tupled pretty_expr es)
 
     | BinOp(e1, op, e2) ->
-        match e1, op, e2 with
-        | (_, "*", _)
-        | (_, "/", _) ->
-            match e1, e2 with
-            | ((BinOp (_, "+", _ )), (BinOp (_, "+", _ ))) 
-            | ((BinOp (_, "+", _ )), (BinOp (_, "-", _ )))
-            | ((BinOp (_, "-", _ )), (BinOp (_, "+", _ )))
-            | ((BinOp (_, "-", _ )), (BinOp (_, "-", _ ))) -> sprintf "(%s) %s (%s)" (pretty_expr e1) op (pretty_expr e2)
-            | _ , (BinOp (_, "+", _ ))
-            | _, (BinOp (_, "-", _ )) -> sprintf "%s %s (%s)" (pretty_expr e1) op (pretty_expr e2)
-            | (BinOp (_, "-", _ )), _
-            | (BinOp (_, "-", _ )), _ -> sprintf "(%s) %s %s" (pretty_expr e1) op (pretty_expr e2)
-            | _ -> sprintf "%s %s %s" (pretty_expr e1) op (pretty_expr e2)
-        | _ -> sprintf "%s %s %s" (pretty_expr e1) op (pretty_expr e2)
+        let operator_priority =
+            List.findIndex (fun op_list -> List.contains op op_list) binary_operators_priority
 
-        
+        let expr_string expr =
+            match expr with
+            | App _
+            | UnOp _ -> sprintf "(%s)" (pretty_expr expr)
+            | BinOp(_, nested_expr_op, _) ->
+                let nested_operator_priority =
+                    List.findIndex (fun op_list -> List.contains nested_expr_op op_list) binary_operators_priority
 
-    | UnOp(op, e) -> sprintf "%s %s" op (pretty_expr e)
+                if nested_operator_priority < operator_priority then
+                    sprintf "(%s)" (pretty_expr expr)
+                else
+                    sprintf "%s" (pretty_expr expr)
+            | _ -> sprintf "%s" (pretty_expr expr)
+
+        sprintf "%s %s %s" (expr_string e1) op (expr_string e2)
+
+    | UnOp(op, e) ->
+        match op, e with
+        | ("not", UnOp("-", _)) -> sprintf "%s (%s)" op (pretty_expr e)
+        | _ -> sprintf "%s %s" op (pretty_expr e)
 
     | _ -> unexpected_error "pretty_expr: %s" (pretty_expr e)
 
