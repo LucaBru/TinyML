@@ -11,13 +11,14 @@ let type_error fmt = throw_formatted TypeError fmt
 
 type subst = (tyvar * ty) list
 
-let mutable c = 0
+let mutable private c = 0
 
 let fresh_typevar () =
     let id = c
     c <- c + 1
     TyVar id
 
+// to use in the tests
 let reset_typevar_counter () = c <- 0
 
 let set_typevar_count value = c <- value
@@ -36,7 +37,8 @@ let rec apply_subst t subst =
     | TyName _ -> t
     | TyVar type_var ->
         try
-            List.find (fun (in_subst_type_var, _) -> type_var = in_subst_type_var) subst
+            subst
+            |> List.find (fun (in_subst_type_var, _) -> type_var = in_subst_type_var)
             |> snd
         with :? System.Collections.Generic.KeyNotFoundException ->
             t
@@ -53,34 +55,39 @@ let apply_subst_scheme (Forall(pol_vars, t)) (subst: subst) =
 let apply_subst_env env subst =
     env |> List.map (fun (var, scheme) -> (var, apply_subst_scheme scheme subst))
 
+//into the substitution you have the same type variable maps from different types (which can't be unified by a substitutions)
 let conflict_in_subst subst =
     List.tryFind
         (fun ((type_var1, t1), (type_var2, t2)) -> type_var1 = type_var2 && t1 <> t2)
         (List.allPairs subst subst)
 
+//into the substitution there exists a map from ai -> ti s.t ai is into ti
 let circularity_in_subst subst =
     List.tryFind (fun (type_var, t) -> is_typevar_into_type type_var t) subst
 
 let compose_subst subst1 subst2 =
+    // application of the first one to the codomain of the second one
     let composed_subst =
         (List.map (fun (type_var, t) -> (type_var, apply_subst t subst1)) subst2)
         @ subst1
 
+    //search for conflicts
     let conflicts = conflict_in_subst composed_subst
 
     match conflicts with
     | Some((conflict_type_var, t1), (_, t2)) ->
         raise (
             type_error
-                $"compose substitution error, conflict type variable {conflict_type_var} maps to type {t1} and {t2}"
+                $"compose substitution error: conflict type variable {conflict_type_var} maps to type {t1} and {t2}"
         )
     | _ -> ()
 
+    //search for circularity
     let circularity = circularity_in_subst composed_subst
 
     match circularity with
     | Some(circular_type_var, t) ->
-        raise (type_error $"compose substitution error, circular type variable {circular_type_var} maps to type {t}") //circular_type_var, t
+        raise (type_error $"compose substitution error: circular type variable {circular_type_var} maps to type {t}")
     | _ -> ()
 
     composed_subst
@@ -100,7 +107,7 @@ let rec unify t1 t2 =
             []
             (List.zip tuple1 tuple2)
 
-    | _ -> raise (type_error $"unification error, try to unify types {t1} and {t2}")
+    | _ -> raise (type_error $"unification error: {t1} is incompatible with {t2}")
 
 let rec freevars_ty t =
     match t with
@@ -125,9 +132,15 @@ let rec inst (Forall(free_vars: Set<tyvar>, t)) =
 let gen env t =
     Forall(freevars_ty t - freevars_scheme_env env, t)
 
-// basic environment: add builtin operators at will
-//
+(*
+    language's operators
+        note that each operator is followed by a list of compatible types
+        the language allows the use of operators on operands of the same types (as F#)
+        operators are polymorphic (as F#)
+        the order in the list count since the first is inferred if no information on the operands are available (as F#)
 
+        the code is open to accept new operators, you only need to push them into this lists
+*)
 let math_binary_operators =
     [ ("+", [ TyInt; TyFloat; TyChar; TyString ])
       ("-", [ TyInt; TyFloat ])
@@ -168,37 +181,36 @@ let rec typeinfer_expr (env: scheme env) (e: expr) : ty * subst =
         try
             let s = lookup env var_name
             let t = inst s
-            (t, [])
+            t, []
         with :? System.Collections.Generic.KeyNotFoundException ->
             raise (type_error $"type inference: variable '{var_name}' not found in the environment")
 
     | Lambda(param, type_annotation, body) ->
         let param_type = fresh_typevar ()
 
-        let subst' =
+        //why the type_annotation_subst is necessary? And why already here? Take as example => fun (x:float) -> x + y
+        let type_annotation_subst =
             match type_annotation with
             | None -> []
             | Some t -> unify param_type t
 
         let env_within_param =
-            (param, Forall(Set.empty, apply_subst param_type subst')) :: env
+            (param, Forall(Set.empty, apply_subst param_type type_annotation_subst)) :: env
 
         let t2, subst1 = typeinfer_expr env_within_param body
 
-        let composed_subst = subst1 $ subst'
-        let t1 = apply_subst param_type composed_subst
+        let theta = subst1 $ type_annotation_subst
+        let t1 = apply_subst param_type theta
 
-        (apply_subst (TyArrow(t1, t2)) composed_subst, composed_subst)
+        apply_subst (TyArrow(t1, t2)) theta, theta
 
-    | App(lambda, argument) ->
-        let t1, subst1 = typeinfer_expr env lambda
-        let t2, subst2 = typeinfer_expr (apply_subst_env env subst1) argument
-
-
-        let result_type = fresh_typevar ()
-        let subst3 = unify t1 (TyArrow(t2, result_type))
-        let t = apply_subst result_type subst3
-        (t, subst3 $ subst2)
+    | App(left_expr, right_expr) ->
+        let t1, subst1 = typeinfer_expr env left_expr
+        let t2, subst2 = typeinfer_expr (apply_subst_env env subst1) right_expr
+        let application_type = fresh_typevar ()
+        let subst3 = unify t1 (TyArrow(t2, application_type))
+        let t = apply_subst application_type subst3
+        t, subst3 $ subst2
 
     | IfThenElse(e1, e2, Some e3) ->
         let t1, s1 = typeinfer_expr env e1
@@ -220,97 +232,106 @@ let rec typeinfer_expr (env: scheme env) (e: expr) : ty * subst =
 
                 inferred_type)
 
-        (TyTuple tuple_types, previous_subst)
+        TyTuple tuple_types, previous_subst
 
     | BinOp(left_expr, op, right_expr) ->
         let left_type, subst1 = typeinfer_expr env left_expr
         let right_type, subst2 = typeinfer_expr env right_expr
-        let subst3 = unify left_type right_type
 
-        let operation_result_type = apply_subst left_type (subst3 $ subst2 $ subst1)
+        //requires that the two operand can became the same type
+        let same_operand_subst = unify left_type right_type
+
+        let operation_type = apply_subst left_type (same_operand_subst $ subst2 $ subst1)
 
         try
-            let operator_details =
-                binary_operators |> List.find (fun (operator, _) -> op = operator)
+            let _, operands_types_allowed = binary_operators |> List.find (fun (o, _) -> op = o)
 
-
-            let composed_subst =
-                (match operation_result_type with
+            let theta =
+                (match operation_type with
                  | TyVar _ ->
-                     //forced type to a specific one if both operands have type type var
-                     let forced_type = operator_details |> snd |> List.head
-                     unify operation_result_type forced_type
+                     (*
+                        in this case both operators' types are type variable so i need to force them to be specific type
+                        otherwise i can apply an operator to types that don't support it
+                     *)
+                     let forced_type = operands_types_allowed |> List.head
+                     unify operation_type forced_type
 
                  | _ ->
-                     operator_details
-                     |> snd
-                     |> List.find (fun c -> c = operation_result_type)
+                     (*
+                        in this case at least one of the two is a type different from TyVar so i require
+                        that it is one of the ones recognized from the operator, if not an exception is throws
+                     *)
+                     operands_types_allowed
+                     |> List.find (fun allowed_type -> allowed_type = operation_type)
                      |> ignore
 
                      [])
-                $ subst3
+                $ same_operand_subst
                 $ subst2
                 $ subst1
 
             match op with
-            | MathOperator -> operation_result_type, composed_subst
-            | ComparisonOperator -> TyBool, composed_subst
+            | MathOperator -> operation_type, theta
+            | ComparisonOperator -> TyBool, theta
 
         with :? System.Collections.Generic.KeyNotFoundException ->
-            raise (
-                type_error $"type inference: try to use the binary operator {op} with non supported type {left_type}"
-            )
+            raise (type_error $"type inference: the operator {op} is not defined for type {operation_type}")
 
-    | UnOp(operator, expr) ->
+    | UnOp(op, expr) ->
         let expr_type, subst = typeinfer_expr env expr
 
+        printfn $"operator {op} => expression type: {expr_type}"
         try
+            (* same behaviour of the lambda*)
             match expr_type with
             | TyVar _ ->
                 let forced_type =
-                    List.find (fun (op, _) -> op = operator) unary_operators |> snd |> List.head
+                    List.find (fun (o, _) -> o = op) unary_operators |> snd |> List.head
 
-                let subst' = unify expr_type forced_type
-                forced_type, subst' $ subst
+                let type_annotation_subst = unify expr_type forced_type
+                let theta = type_annotation_subst $ subst
+                apply_subst forced_type theta, theta
+
             | _ ->
-                List.find (fun (op, _) -> op = operator) unary_operators
+                List.find (fun (o, _) -> o = op) unary_operators
                 |> snd
-                |> List.exists (fun acceptable_ty -> acceptable_ty = expr_type)
+                |> List.find (fun acceptable_ty -> acceptable_ty = expr_type)
                 |> ignore
 
                 apply_subst expr_type subst, subst
         with :? System.Collections.Generic.KeyNotFoundException ->
-            raise (type_error $"type inference: error while inference unary operator {operator}")
+            raise (type_error $"type inference: unary operator {op} not defined for type {expr_type}")
 
+    | Let(var_name, type_annotation, value_expr, in_expr) ->        
+        let t1, subst1 = typeinfer_expr env value_expr
 
-    | Let(var_name, type_annotation, value_expr, in_expr) ->
-        let t1, s1 = typeinfer_expr env value_expr
-
-        let s3 =
+        let type_annotation_subst =
             match type_annotation with
             | None -> []
             | Some t -> unify t1 t
 
-        let s1_to_env = apply_subst_env env s1
-        let sigma1 = gen s1_to_env t1
-        let t2, s2 = typeinfer_expr ((var_name, sigma1) :: s1_to_env) in_expr
-        (t2, s3 $ s2 $ s1)
+        let subst1_env = apply_subst_env env (subst1 $type_annotation_subst)
+        let sigma1 = gen subst1_env t1
+        let t2, subst2 = typeinfer_expr ((var_name, sigma1) :: subst1_env) in_expr
+        let theta = type_annotation_subst $ subst2 $ subst1 
+        apply_subst t2 theta, theta
 
-    | LetRec(lambda_name, type_annotation, (Lambda(param, lambda_param_type_annotation, body) as lambda), in_expression) ->
+    | LetRec(lambda_name, type_annotation, (Lambda(_, _, _) as lambda), in_expression) ->
         let lambda_type = fresh_typevar ()
 
-        let t1, s1 =
+        let t1, subst1 =
             typeinfer_expr ((lambda_name, Forall(Set.empty, lambda_type)) :: env) lambda
 
-        let s4 =
+        let type_annotation_subst =
             match type_annotation with
             | None -> []
             | Some t -> unify t1 t
 
-        let env1 = apply_subst_env env s1
-        let t2, s2 = typeinfer_expr ((lambda_name, gen env1 t1) :: env1) in_expression
-        let s3 = unify lambda_type (apply_subst t1 s1)
-        (t2, s4 $ s3 $ s2 $ s1)
+        let env1 = apply_subst_env env (subst1 $ type_annotation_subst)
+        let t2, subst2 = typeinfer_expr ((lambda_name, gen env1 t1) :: env1) in_expression
+        let subst3 = unify lambda_type (apply_subst t1 subst1)
+        let theta = type_annotation_subst $ subst3 $ subst2 $ subst1
+        apply_subst t2 theta, theta
 
     | _ -> unexpected_error "typeinfer_expr: unsupported expression: %s [AST: %A]" (pretty_expr e) e
 
